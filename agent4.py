@@ -188,7 +188,10 @@ def anthropic_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, tem
     response = requests.post(ANTHROPIC_URL, headers=headers, json=data)
     result = response.json()
     if DEBUG: print(result)
-    return result['content'][0]['text']
+    if 'content' in result:
+        return result['content'][0]['text']
+    else:
+        return result
 
 def openai_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp = 0, tokens = 1024) -> str:
     if not OPENAI_API_KEY:
@@ -208,7 +211,10 @@ def openai_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp =
     response = requests.post(OPENAI_URL, headers=headers, json=data)
     result = response.json()
     if DEBUG: print(result)
-    return result['choices'][0]['message']['content']
+    if 'choices' in result:
+        return result['choices'][0]['message']['content']
+    else:
+        return result
 
 def deepseek_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp = 0, tokens = 1024) -> str:
     if not DEEPSEEK_API_KEY:
@@ -228,7 +234,10 @@ def deepseek_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp
     response = requests.post(DEEPSEEK_URL, headers=headers, json=data)
     result = response.json()
     if DEBUG: print(result)
-    return result['choices'][0]['message']['content']
+    if 'choices' in result:
+        return result['choices'][0]['message']['content']
+    else:
+        return result
 
 def openrouter_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp = 0, tokens = 1024) -> str:
     if not OPENROUTER_API_KEY:
@@ -247,7 +256,10 @@ def openrouter_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, te
     response = requests.post(OPENROUTER_URL, headers=headers, json=data)
     result = response.json()
     if DEBUG: print(result)
-    return result['choices'][0]['message']['content']
+    if 'choices' in result:
+        return result['choices'][0]['message']['content']
+    else:
+        return result
 
 # Command Parsing and Execution
 def parse_command(input_string: str) -> Tuple[str, List[str]]:
