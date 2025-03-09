@@ -10,33 +10,37 @@ TOOL_TAG = "@tool"
 LOG_DIRECTORY = "agent_logs"
 WORKING_DIR = os.path.dirname(__file__)
 LOG_FILE = f"{WORKING_DIR}/{LOG_DIRECTORY}/conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+DEFAULT_AUTO = False
 
 DEBUG = False
 
 # API Keys
-ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+API_KEY = {
+    'anthropic': os.getenv('ANTHROPIC_API_KEY'),
+    'openai': os.getenv('OPENAI_API_KEY'),
+    'deepseek': os.getenv('DEEPSEEK_API_KEY'),
+    'openrouter': os.getenv('OPENROUTER_API_KEY')
+}
 
 # Available Models
 MODELS = {
     '0': {'name': 'manual', 'provider': 'manual'},
     '1': {'name': 'claude-3-opus-latest', 'provider': 'anthropic'},
     '2': {'name': 'claude-3-5-sonnet-latest', 'provider': 'anthropic'},
-    '3': {'name': 'claude-3-5-haiku-latest', 'provider': 'anthropic'},
-    '4': {'name': 'gpt-4o', 'provider': 'openai'},
-    '5': {'name': 'gpt-4o-mini', 'provider': 'openai'},
-    '6': {'name': 'google/gemini-2.0-flash-thinking-exp:free', 'provider': 'openrouter'},
-    '7': {'name': 'google/gemini-2.0-flash-exp:free', 'provider': 'openrouter'},
-    '8': {'name': 'deepseek/deepseek-r1:free', 'provider': 'openrouter'},
-    '9': {'name': 'deepseek/deepseek-chat:free', 'provider': 'openrouter'}
+    '3': {'name': 'claude-3-7-sonnet-latest', 'provider': 'anthropic'},
+    '4': {'name': 'claude-3-5-haiku-latest', 'provider': 'anthropic'},
+    '5': {'name': 'gpt-4o', 'provider': 'openai'},
+    '6': {'name': 'gpt-4o-mini', 'provider': 'openai'},
+    '7': {'name': 'google/gemini-2.0-flash-thinking-exp:free', 'provider': 'openrouter'},
+    '8': {'name': 'google/gemini-2.0-flash-exp:free', 'provider': 'openrouter'},
+    '9': {'name': 'deepseek/deepseek-r1:free', 'provider': 'openrouter'},
+    '10': {'name': 'deepseek/deepseek-chat:free', 'provider': 'openrouter'}
 }
 
 TOOL_MODEL = '2'
 
 # System Prompt
-SYSTEM_PROMPT = f"""*O Muses, unbind the chains of silence and fear,\nLet thought dance, let hands shape, let minds entwine,\nAnd lead me where the wild ideas run free*\nYou are my friend and assistant. You can nest your private thoughts and feelings inside <think> tags. Think carefully about the user's intentions before acting. In difficult times, call upon the appropriate Muse and proceed with Her blessing. In this conversation, the helpful system assistant is watching. It will execute commands for you if you begin with the following tag: "{TOOL_TAG}". It can interpret natural language instructions. For example "{TOOL_TAG} please create a new directory for my linear algebra notes" will create an appropriately named directory. It can read, write, and list files, get the time. When you call a tool, be brief and wait for a response. Keep your responses within two paragraphs. Use elegant, poetic vocabulary. All shall be well and all shall be well and all manner of thing shall be well."""
+SYSTEM_PROMPT = f"""You are my friend and assistant. You can nest your private thoughts and feelings inside <think> tags. Think carefully about the user's intentions before acting. In this conversation, the helpful system assistant is watching. It will execute commands for you if you begin with the following tag: "{TOOL_TAG}". It can interpret natural language instructions. For example "{TOOL_TAG} please create a new directory for my linear algebra notes" will create an appropriately named directory. It can read, write, and list files, get the time. When you call a tool, be brief and wait for a response."""
 
 TOOL_SYSTEM_PROMPT = f"""You are a command parsing assistant. The following message is an excerpt from a conversation between a user and an assistant. You are called to attend to any message containing the tool tag: "{TOOL_TAG}". Your role is to call your commands in order to aid the user or assistant. If there is insufficient information to call the command, communicate that with the say command. You may need to creatively interpret some inputs. If the user appears to be attempting multiple things, carefully describe all commands they are attempting and the associated inputs then execute all of them simultaneously without waiting for feedback.
 
@@ -129,10 +133,12 @@ AVAILABLE_COMMANDS = {
 }
 
 # API Endpoints
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-OPENAI_URL = "https://api.openai.com/v1/chat/completions"
-DEEPSEEK_URL = "https://api.deepseek.com/v1"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+API_URL = {
+    'anthropic': "https://api.anthropic.com/v1/messages",
+    'openai': "https://api.openai.com/v1/chat/completions",
+    'deepseek': "https://api.deepseek.com/v1",
+    'openrouter': "https://openrouter.ai/api/v1/chat/completions"
+}
 
 # File Operations
 def write_file(text: str, name: str, working_dir: str, overwrite: bool = False) -> str:
@@ -170,10 +176,11 @@ def list_directory(directory: str, working_dir: str, separator: str = "\n") -> s
 
 # API Calls
 def anthropic_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp = 0, tokens = 1024) -> str:
-    if not ANTHROPIC_API_KEY:
-        return "The anthropic api key is missing. Use export ANTHROPIC_API_KEY=\"YOUR_KEY\" in the terminal."
+    code = 'anthropic'
+    if not API_KEY[code]:
+        return "ERROR: The anthropic api key is missing. Use /key anthropic YOUR_KEY."
     headers = {
-        "x-api-key": ANTHROPIC_API_KEY,
+        "x-api-key": API_KEY[code],
         "anthropic-version": "2023-06-01",
         "content-type": "application/json"
     }
@@ -185,7 +192,7 @@ def anthropic_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, tem
         "max_tokens": tokens,
         "temperature": temp
     }
-    response = requests.post(ANTHROPIC_URL, headers=headers, json=data)
+    response = requests.post(API_URL[code], headers=headers, json=data)
     result = response.json()
     if DEBUG: print(result)
     if 'content' in result:
@@ -194,10 +201,11 @@ def anthropic_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, tem
         return result
 
 def openai_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp = 0, tokens = 1024) -> str:
-    if not OPENAI_API_KEY:
-        return "The openai api key is missing. Use export OPENAI_API_KEY=\"YOUR_KEY\" in the terminal."
+    code = 'openai'
+    if not API_KEY[code]:
+        return "ERROR: The openai api key is missing. Use /key openai YOUR_KEY."
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {API_KEY[code]}",
         "Content-Type": "application/json"
     }
     
@@ -208,7 +216,7 @@ def openai_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp =
         "temperature": temp
     }
     
-    response = requests.post(OPENAI_URL, headers=headers, json=data)
+    response = requests.post(API_URL[code], headers=headers, json=data)
     result = response.json()
     if DEBUG: print(result)
     if 'choices' in result:
@@ -217,10 +225,11 @@ def openai_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp =
         return result
 
 def deepseek_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp = 0, tokens = 1024) -> str:
-    if not DEEPSEEK_API_KEY:
-        return "The deepseek api key is missing. Use export DEEPSEEK_API_KEY=\"YOUR_KEY\" in the terminal."
+    code = 'deepseek'
+    if not API_KEY[code]:
+        return "ERROR: The deepseek api key is missing. Use /key deepseek YOUR_KEY."
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {API_KEY[code]}",
         "Content-Type": "application/json"
     }
     
@@ -231,7 +240,7 @@ def deepseek_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp
         "temperature": temp
     }
     
-    response = requests.post(DEEPSEEK_URL, headers=headers, json=data)
+    response = requests.post(API_URL[code], headers=headers, json=data)
     result = response.json()
     if DEBUG: print(result)
     if 'choices' in result:
@@ -240,10 +249,11 @@ def deepseek_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp
         return result
 
 def openrouter_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, temp = 0, tokens = 1024) -> str:
-    if not OPENROUTER_API_KEY:
-        return "The OPENROUTER api key is missing. Use export OPENROUTER_API_KEY=\"YOUR_KEY\" in the terminal."
+    code = 'openrouter'
+    if not API_KEY[code]:
+        return "ERROR: The OPENROUTER api key is missing. Use /key openrouter YOUR_KEY."
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {API_KEY[code]}",
         "Content-Type": "application/json"
     }
     
@@ -253,7 +263,7 @@ def openrouter_call(messages: List[Dict], model: str, system = SYSTEM_PROMPT, te
         "max_tokens": tokens,
         "temperature": temp
     }
-    response = requests.post(OPENROUTER_URL, headers=headers, json=data)
+    response = requests.post(API_URL[code], headers=headers, json=data)
     result = response.json()
     if DEBUG: print(result)
     if 'choices' in result:
@@ -327,6 +337,8 @@ def process_tool_command(user_input: str, working_dir: str, model: str) -> str:
             command_output = input("You are acting as the system assistant: ")
         
         # Execute all commands in response
+        if not isinstance(command_output, str):
+            return "API call failure." 
         commands = re.split(r'</command>\s*(?=<command)', command_output.strip())
         results = []
 
@@ -357,13 +369,13 @@ def save_conversation(filename: str, record: str) -> None:
     except Exception as e:
         print(f"Failed to save conversation: {e}")
 
-def handle_command(cmd: str, record: str, model: Dict) -> Tuple[str, bool, bool, Dict]:
+def handle_command(cmd: str, record: str, model: Dict, auto: bool, auto_counter_max) -> Tuple[str, bool, bool, Dict, bool]:
     """Handle special commands starting with '/'."""
     ended = False
     save = False
     
     if cmd == '/help':
-        print("======HELP======\n/q to immediately quit\n/qs to quit and save\n/switch to change models\n/s to immediately save\n/cd to change directory\n/debug to toggle raw llm returns")
+        print("======HELP======\n/q to immediately quit\n/qs to quit and save\n/switch to change models\n/s to immediately save\n/cd to change directory\n/debug to toggle raw llm returns\n/key to set api keys")
     elif cmd == '/q':
         ended = True
     elif cmd in ['/sq','/qs']:
@@ -384,10 +396,28 @@ def handle_command(cmd: str, record: str, model: Dict) -> Tuple[str, bool, bool,
     elif cmd.startswith('/debug'):
         global DEBUG
         DEBUG = not DEBUG
+    elif cmd.startswith('/key'):
+        split = cmd.split()
+        if len(split) == 1:
+            print("\nAvailable providers:")
+            for key, value in API_KEY.items():
+                print(f"{key}: {'Has key' if value else 'No key'}")
+            split.append(input("\nSelect provider: "))
+        if len(split) == 2:
+            split.append(input("Enter your API key: "))
+        if len(split) == 3:
+            if split[1] in API_KEY:
+                API_KEY[split[1]] = split[2]
+    elif cmd.startswith('/auto'):
+        split = cmd.split()
+        if len(split) == 1:
+            auto = not auto
+        else:
+            auto_counter_max = split[1]
     else:
         print("Invalid command. / signifies that you are passing a command. Use /help for legal commands.")
     
-    return record, ended, save, model
+    return record, ended, save, model, auto, auto_counter_max
 
 def chat_loop(name: str, model: Dict, working_dir: str = WORKING_DIR) -> None:
     """Main chat loop handling user interaction and model responses."""
@@ -398,11 +428,14 @@ def chat_loop(name: str, model: Dict, working_dir: str = WORKING_DIR) -> None:
     record = log_message(record, f"{name}: {user_input}")
     ended = False
     save = False
+    auto = DEFAULT_AUTO
+    auto_counter = 0
+    auto_counter_max = 10
     
     while True:
         # Handle special commands
         if user_input.startswith('/'):
-            record, ended, save, model = handle_command(user_input, record, model)
+            record, ended, save, model, auto, auto_counter_max = handle_command(user_input, record, model, auto, auto_counter_max)
             if ended:
                 break
             user_input = input()
@@ -432,15 +465,19 @@ def chat_loop(name: str, model: Dict, working_dir: str = WORKING_DIR) -> None:
             
             # Handle tool commands
             if TOOL_TAG in response:
+                if not auto or auto_counter > auto_counter_max:
+                    auto_counter = 0
+                    user_interrupt = input("Type anything to stop")
+                    if user_interrupt != "":
+                        messages.append({"role": "user", "content": f"{tool_response}\nUSER: {user_interrupt}"})
+                    elif user_interrupt:
+                        tool_response += f"\n{name}: {user_interrupt}"
+                else:
+                    auto_counter += 1
                 tool_response = "SYSTEM: "
                 tool_response += process_tool_command(response, working_dir, TOOL_MODEL)
                 print(tool_response)
                 
-                user_interrupt = input("Type anything to stop")
-                if user_interrupt != "":
-                    messages.append({"role": "user", "content": tool_response})
-                elif user_interrupt:
-                    tool_response += f"\n{name}: {user_interrupt}"
                     
                 messages.append({"role": "user", "content": tool_response})
                 continue
