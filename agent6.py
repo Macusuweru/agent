@@ -2,6 +2,7 @@ import os
 import requests
 import re
 from datetime import datetime
+import json
 
 # Constants
 NAME = "Maxwell"
@@ -9,7 +10,7 @@ TOOL_TAG = "@tool"
 AGENT_DIR = "agent"
 HISTORY_DIR = f"{AGENT_DIR}/history"
 LOGS_DIR = f"{AGENT_DIR}/logs"
-WORKING_DIR = os.path.dirname(os.path.abspath(__file__)) +"/"
+WORKING_DIR = os.path.dirname(os.path.abspath(__file__)) + "/"
 HISTORY_FILE = os.path.join(WORKING_DIR, HISTORY_DIR, f"conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 NOTE_LOG_FILE = os.path.join(WORKING_DIR, LOGS_DIR, f"notes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 CALENDAR_FILE = os.path.join(WORKING_DIR, AGENT_DIR, "calendar_events.txt")
@@ -169,13 +170,86 @@ SUMMARIZE_TOOL_SYSTEM_PROMPT = """You are an expert summarizer. Your task is to 
 </FILE_CONTENT>
 
 Provide only the summary, without additional commentary or metadata."""
-
 API_URL = {
     'anthropic': "https://api.anthropic.com/v1/messages",
     'openai': "https://api.openai.com/v1/chat/completions",
     'deepseek': "https://api.deepseek.com/chat/completions",
     'openrouter': "https://openrouter.ai/api/v1/chat/completions"
 }
+
+# Memory Management
+def add_to_memory(main_memory, entry_type, content, current_model_key, debug=DEBUG):
+    entry = {
+        "type": entry_type,
+        "content": content,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    main_memory.append(entry)
+    model_name = MODELS[current_model_key]['name'] if current_model_key in MODELS else NAME
+    if entry_type == "agent":
+        print(f"{model_name}: {content}")
+    elif entry_type == "api_error":
+        print(f"Error: {content}")
+    elif entry_type == "system":
+        print(f"{content}")
+    elif debug and entry_type in ["system", "tool", "assistant"]:
+        print(f"DEBUG {'ASSISTANT'}: {content}")
+
+def save_memory(main_memory, filename):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with open(filename, 'w') as f:
+        json.dump(main_memory, f, indent=2)
+    return f"Saved memory to {filename}"
+
+def load_memory(filename, initial_model_key):
+    if not os.path.exists(filename):
+        memory = [
+            {"type": "system_prompt", "content": SYSTEM_PROMPT, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+            {"type": "model", "content": f"Initial model set to {MODELS[initial_model_key]['name']}", "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        ]
+        return memory
+    with open(filename, 'r') as f:
+        return json.load(f)
+
+# API Formatting
+# CHANGED: Excluded "command" type from payload
+def format_openai_payload(main_memory):
+    messages = []
+    for entry in main_memory:
+        if entry["type"] == "system_prompt":
+            messages.append({"role": "system", "content": entry["content"]})
+        elif entry["type"] in ["user", "agent"]:
+            role = "assistant" if entry["type"] == "agent" else "user"
+            messages.append({"role": role, "content": entry["content"]})
+        elif entry["type"] == "system":
+            messages.append({"role": "user", "content": entry["content"]})
+    return {"model": MODELS[MODEL_KEY]['name'], "messages": messages, "temperature": 0, "max_tokens": 2048}
+
+# CHANGED: Excluded "command" type from payload
+def format_anthropic_payload(main_memory):
+    messages = []
+    combined_user_content = ""
+    system_prompt = next((e["content"] for e in main_memory if e["type"] == "system_prompt"), SYSTEM_PROMPT)
+    for entry in main_memory:
+        if entry["type"] in ["user", "system"]:
+            combined_user_content += f"{entry['content']}\n"
+        elif entry["type"] == "agent":
+            if combined_user_content:
+                messages.append({"role": "user", "content": combined_user_content.strip()})
+                combined_user_content = ""
+            messages.append({"role": "assistant", "content": entry["content"]})
+    #if combined_user_content != "":
+    #    messages.append({"role": "user", "content": combined_user_content.strip()})
+    return {"model": MODELS[MODEL_KEY]['name'], "system": system_prompt, "messages": messages, "max_tokens": 2048}
+
+api_formatters = {
+    "openai": format_openai_payload,
+    "anthropic": format_anthropic_payload,
+    "deepseek": format_openai_payload
+}
+
+def format_api_payload(main_memory, api_type):
+    return api_formatters[api_type](main_memory)
 
 # File Operations
 def resolve_path(working_dir, path):
@@ -189,9 +263,7 @@ def resolve_path(working_dir, path):
 
 def write_file(text, name, working_dir, overwrite=False):
     try:
-        print(name, working_dir)
         path = resolve_path(working_dir, name)
-        print(path)
         with open(path, 'w' if overwrite else 'a') as f:
             f.write(text)
         return f"{'Overwrote' if overwrite else 'Wrote to'} '{name}'"
@@ -202,23 +274,15 @@ def read_file(name, working_dir):
     path = resolve_path(working_dir, name)
     return open(path, 'r').read() if os.path.exists(path) else f"'{name}' not found"
 
-def summarize_file(filename, working_dir, model_key='5'):  # Default to 'deepseek-chat'
-    """Summarize the contents of a file using an LLM."""
+def summarize_file(filename, working_dir, model_key='5'):
     path = resolve_path(working_dir, filename)
     if not os.path.exists(path):
         return f"'{filename}' not found"
-    
     try:
         with open(path, 'r') as f:
             content = f.read()
-        
-        # Prepare the prompt with the file content
         prompt = SUMMARIZE_TOOL_SYSTEM_PROMPT.format(content=content)
-        messages = [{"role": "user", "content": prompt}]
-        
-        # Call the API with the default DeepSeek Chat model (or specified model)
-        summary = api_call(messages, model_key, SUMMARIZE_TOOL_SYSTEM_PROMPT, provider='deepseek')
-        return summary if isinstance(summary, str) else f"Error generating summary: {summary}"
+        return api_call_minimal([{"role": "user", "content": prompt}], model_key, 'deepseek', SUMMARIZE_TOOL_SYSTEM_PROMPT)
     except Exception as e:
         return f"Error summarizing '{filename}': {e}"
 
@@ -227,7 +291,6 @@ def list_directory(directory, working_dir):
     return '\n'.join(os.listdir(path)) if os.path.exists(path) else f"No files in '{path}'"
 
 def mkdir(directory, working_dir):
-    """Create a directory (and its parents if needed) relative to the working directory."""
     try:
         path = resolve_path(working_dir, directory)
         if os.path.exists(path):
@@ -236,44 +299,25 @@ def mkdir(directory, working_dir):
         return f"Created directory '{directory}'"
     except Exception as e:
         return f"Error creating directory '{directory}': {e}"
-    
+
 def cd(directory, working_dir):
-    """Change the current working directory and list files and directories separately."""
     try:
-        new_path = resolve_path(directory, working_dir)
+        new_path = resolve_path(working_dir, directory)
         if not os.path.exists(new_path):
             return f"Error: Directory '{directory}' does not exist"
         if not os.path.isdir(new_path):
             return f"Error: '{directory}' is not a directory"
-        
         global WORKING_DIR
-        old_dir = WORKING_DIR
         WORKING_DIR = new_path
-
         files = [f for f in os.listdir(new_path) if os.path.isfile(os.path.join(new_path, f))]
         dirs = [d for d in os.listdir(new_path) if os.path.isdir(os.path.join(new_path, d))]
-        
         files_str = "Files:\n" + "\n".join(files) if files else "Files: None"
         dirs_str = "Directories:\n" + "\n".join(dirs) if dirs else "Directories: None"
-        
-        return f"Changed directory from '{old_dir}' to '{WORKING_DIR}'\n{files_str}\n{dirs_str}"
+        return f"Changed directory to '{WORKING_DIR}'\n{files_str}\n{dirs_str}"
     except Exception as e:
         return f"Error changing directory to '{directory}': {e}"
 
-def log_note(note, log_file=NOTE_LOG_FILE):
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    entry_num = 1
-    if os.path.exists(log_file):
-        with open(log_file, 'r') as f:
-            if lines := f.readlines():
-                entry_num = int(re.match(r'(\d+):', lines[-1]).group(1)) + 1
-    entry = f"{entry_num}: {datetime.now().strftime('%B %d, %Y %H:%M:%S')} - {note}\n"
-    with open(log_file, 'a') as f:
-        f.write(entry)
-    return f"Logged as Entry {entry_num}"
-
 def load_calendar():
-    """Load calendar events from file into memory."""
     global calendar_events
     calendar_events.clear()
     if os.path.exists(CALENDAR_FILE):
@@ -284,7 +328,6 @@ def load_calendar():
                     date = datetime.strptime(date, '%Y-%m-%d').date()
                     event, times = event_data.split("@")
                     start, stop = times.split("-")
-                    # Validate time format (HH:MM)
                     datetime.strptime(start, '%H:%M')
                     datetime.strptime(stop, '%H:%M')
                     if date not in calendar_events:
@@ -295,7 +338,6 @@ def load_calendar():
     return "Calendar loaded" if calendar_events else "No calendar events found"
 
 def save_calendar():
-    """Save in-memory calendar events to file."""
     os.makedirs(os.path.dirname(CALENDAR_FILE), exist_ok=True)
     with open(CALENDAR_FILE, 'w') as f:
         for date, events in sorted(calendar_events.items()):
@@ -304,15 +346,12 @@ def save_calendar():
     return "Calendar saved"
 
 def add_event(date_str, event, start_time, stop_time):
-    """Add an event to the calendar with start and stop times."""
     try:
         date = datetime.strptime(date_str, '%Y-%m-%d').date()
-        # Validate time format
         start = datetime.strptime(start_time, '%H:%M').strftime('%H:%M')
         stop = datetime.strptime(stop_time, '%H:%M').strftime('%H:%M')
         if start >= stop:
             return "Stop time must be after start time"
-        
         if date not in calendar_events:
             calendar_events[date] = []
         calendar_events[date].append({"event": event, "start": start, "stop": stop})
@@ -322,7 +361,6 @@ def add_event(date_str, event, start_time, stop_time):
         return "Invalid format. Use YYYY-MM-DD for date and HH:MM for times"
 
 def get_events(date_str):
-    """Get events for a specific date."""
     try:
         date = datetime.strptime(date_str, '%Y-%m-%d').date()
         events = calendar_events.get(date, [])
@@ -334,18 +372,14 @@ def get_events(date_str):
         return "Invalid date format. Use YYYY-MM-DD"
 
 def delete_event(date_str, event_name):
-    """Delete a specific event from a date."""
     try:
         date = datetime.strptime(date_str, '%Y-%m-%d').date()
         if date not in calendar_events or not calendar_events[date]:
             return f"No events found for {date.strftime('%Y-%m-%d')}"
-        
         original_count = len(calendar_events[date])
         calendar_events[date] = [e for e in calendar_events[date] if e['event'] != event_name]
-        
         if len(calendar_events[date]) == original_count:
             return f"Event '{event_name}' not found on {date.strftime('%Y-%m-%d')}"
-        
         if not calendar_events[date]:
             del calendar_events[date]
         save_calendar()
@@ -354,7 +388,44 @@ def delete_event(date_str, event_name):
         return "Invalid date format. Use YYYY-MM-DD"
 
 # API Calls
-def api_call(messages, model_key, system=SYSTEM_PROMPT, provider=None, tokens=2048, temp=0):
+def api_call(main_memory, message_content, model_key, provider=None, tokens=2048, temp=0):
+    if model_key not in MODELS:
+        add_to_memory(main_memory, "api_error", f"Invalid model key: {model_key}", model_key)
+        return f"Invalid model key: {model_key}"
+    model = MODELS[model_key]
+    provider = provider or model['provider']
+    if provider == 'manual':
+        response = input("Manual input: ")
+        add_to_memory(main_memory, "agent", response, model_key)
+        return response
+    if not API_KEY[provider]:
+        add_to_memory(main_memory, "api_error", f"Missing {provider} API key", model_key)
+        return f"Missing {provider} API key"
+    headers = {'Content-Type': 'application/json'}
+    api_type = 'anthropic' if provider == 'anthropic' else 'openai'
+    data = format_api_payload(main_memory, api_type)
+    data["messages"].append({"role": "user", "content": message_content})
+    if provider == 'anthropic':
+        headers['x-api-key'] = API_KEY[provider]
+        headers['anthropic-version'] = '2023-06-01'
+    else:
+        headers['Authorization'] = f"Bearer {API_KEY[provider]}"
+    try:
+        resp = requests.post(API_URL[provider], headers=headers, json=data)
+        resp_json = resp.json()
+        response = resp_json['content'][0]['text'] if provider == 'anthropic' else resp_json['choices'][0]['message']['content']
+        add_to_memory(main_memory, "agent", response, model_key)
+        return response
+    except KeyError as e:
+        error_msg = f"API response parsing error: {e}. Full response: {resp.text}"
+        add_to_memory(main_memory, "api_error", error_msg, model_key)
+        return error_msg
+    except Exception as e:
+        error_msg = f"API call failed: {e}. Full response: {resp.text if 'resp' in locals() else 'No response received'}"
+        add_to_memory(main_memory, "api_error", error_msg, model_key)
+        return error_msg
+
+def api_call_minimal(messages, model_key, provider=None, system_prompt=SYSTEM_PROMPT, tokens=2048, temp=0):
     if model_key not in MODELS:
         return f"Invalid model key: {model_key}"
     model = MODELS[model_key]
@@ -364,33 +435,27 @@ def api_call(messages, model_key, system=SYSTEM_PROMPT, provider=None, tokens=20
     if not API_KEY[provider]:
         return f"Missing {provider} API key"
     headers = {'Content-Type': 'application/json'}
+    data = {"model": model['name'], "messages": messages, "max_tokens": tokens, "temperature": temp}
     if provider == 'anthropic':
-        data = {'model': model['name'], 'system': system, 'messages': messages, 'max_tokens': tokens, 'temperature': temp}
+        data["system"] = system_prompt
         headers['x-api-key'] = API_KEY[provider]
         headers['anthropic-version'] = '2023-06-01'
-    else:  # OpenAI, DeepSeek, and OpenRouter use similar formats
-        data = {
-            'model': model['name'],
-            'messages': [{'role': 'system', 'content': system}] + messages,
-            'max_tokens': tokens,
-            'temperature': temp,
-            'stream': False
-        }
+    else:
+        data["messages"] = [{"role": "system", "content": system_prompt}] + messages
         headers['Authorization'] = f"Bearer {API_KEY[provider]}"
     try:
-        resp = requests.post(API_URL[provider], headers=headers, json=data).json()
-        if provider == 'anthropic':
-            return resp['content'][0]['text']
-        else:
-            if 'reasoning_content' in resp['choices'][0]['message']: 
-                print(f"Thinking:\n{resp['choices'][0]['message']['reasoning_content']}\nResponse:\n")
-            return resp['choices'][0]['message']['content']
+        resp = requests.post(API_URL[provider], headers=headers, json=data)
+        resp_json = resp.json()
+        return resp_json['content'][0]['text'] if provider == 'anthropic' else resp_json['choices'][0]['message']['content']
+    except KeyError as e:
+        error_msg = f"API response parsing error: {e}. Full response: {resp.text}"
+        return error_msg
     except Exception as e:
-        return f"API call failed: {e}"
+        error_msg = f"API call failed: {e}. Full response: {resp.text if 'resp' in locals() else 'No response received'}"
+        return error_msg
 
 # Command Execution
-def parse_command(cmd_str: str) -> list[tuple[str, list[str]]]:
-    """Parse all XML-style commands from a string into a list of (name, args) tuples."""
+def parse_command(cmd_str):
     commands = []
     for match in re.finditer(r'<command name="(\w+)">(.*?)</command>', cmd_str, re.DOTALL):
         command = match.group(1).lower()
@@ -398,31 +463,22 @@ def parse_command(cmd_str: str) -> list[tuple[str, list[str]]]:
         commands.append((command, args))
     return commands
 
-def process_tool_command(input_str: str, working_dir: str, model_key: str) -> str:
-    """Process a tool command through the AI model and execute all commands in it."""
-    messages = [{"role": "user", "content": input_str}]
-    cmd_output = api_call(messages, model_key, TOOL_SYSTEM_PROMPT)
-    print("Raw API output:", cmd_output)  # Debug: Log the raw output
-    
-    if not isinstance(cmd_output, str):
-        return "Error: API did not return a valid response."
-    
-    # Parse all commands from the output
+def process_tool_command(main_memory, input_str, working_dir, model_key):
+    tool_cmd = input_str if TOOL_TAG in input_str else input_str.split('@tool', 1)[1].strip() if '@tool' in input_str else input_str
+    cmd_output = api_call_minimal([{"role": "user", "content": tool_cmd}], model_key, 'deepseek', TOOL_SYSTEM_PROMPT)
+    add_to_memory(main_memory, "tool", cmd_output, model_key)
     command_list = parse_command(cmd_output)
     if not command_list:
+        add_to_memory(main_memory, "system", "No valid commands found in response.", model_key)
         return "No valid commands found in response."
-    
     results = []
     for command, args in command_list:
-        try:
-            results.append(execute_command(command, args, working_dir))
-        except Exception as e:
-            results.append(f"Error executing '{command}': {e}")
-    
+        result = execute_command(command, args, working_dir)
+        add_to_memory(main_memory, "system", result, model_key)
+        results.append(result)
     return '\n'.join(results)
 
-# Update execute_command to handle variable arguments more safely
-def execute_command(cmd: str, args: list[str], working_dir: str) -> str:
+def execute_command(cmd, args, working_dir):
     funcs = {
         'write': lambda t, n: write_file(t, n, working_dir),
         'overwrite': lambda t, n: write_file(t, n, working_dir, True),
@@ -433,87 +489,84 @@ def execute_command(cmd: str, args: list[str], working_dir: str) -> str:
         'cd': lambda d: cd(d, working_dir),
         'time': lambda: datetime.now().strftime("%B %d, %Y %I:%M %p"),
         'say': lambda m: m,
-        'log_note': lambda n: log_note(n),
         'calendar_add': lambda d, e, start, stop: add_event(d, e, start, stop),
         'calendar_get': lambda d: get_events(d),
         'calendar_delete': lambda d, e: delete_event(d, e),
         'pass': lambda: "Pass control back to user"
     }
-    
     if cmd not in funcs:
         return f"Unknown command: {cmd}"
-    
     try:
         if cmd == 'ls' and not args:
-            return funcs[cmd]()
+            return "SYSTEM: " + funcs[cmd]()
         elif cmd in ['write', 'overwrite'] and len(args) == 2:
-            return funcs[cmd](args[0], args[1])
-        elif cmd in ['read', 'say', 'log_note', 'calendar_get', 'summarize', 'ls', 'mkdir','cd'] and len(args) == 1:
-            return funcs[cmd](args[0])
+            return "SYSTEM: " + funcs[cmd](args[0], args[1])
+        elif cmd in ['read', 'say', 'summarize', 'ls', 'mkdir', 'cd'] and len(args) == 1:
+            return "SYSTEM: " + funcs[cmd](args[0])
         elif cmd == 'calendar_add' and len(args) == 4:
-            return funcs[cmd](args[0], args[1], args[2], args[3])
+            return "SYSTEM: " + funcs[cmd](args[0], args[1], args[2], args[3])
         elif cmd == 'calendar_delete' and len(args) == 2:
-            return funcs[cmd](args[0], args[1])
+            return "SYSTEM: " + funcs[cmd](args[0], args[1])
         elif cmd in ['time', 'pass'] and not args:
-            return funcs[cmd]()
+            return "SYSTEM: " + funcs[cmd]()
         else:
-            return f"Invalid arguments for '{cmd}': {args}"
+            return f"SYSTEM: Invalid arguments for '{cmd}': {args}"
     except Exception as e:
-        return f"Error executing '{cmd}': {e}"
+        return f"SYSTEM: Error executing '{cmd}': {e}"
 
 # Chat Loop
+# CHANGED: Record / commands as "command", skip API call for them
 def chat_loop(name, model_key):
+    global MODEL_KEY
+    MODEL_KEY = model_key
     if model_key not in MODELS:
         print(f"Invalid model key: {model_key}")
         return
     model = MODELS[model_key]
-    messages = []
-    record = f"Conversation with {model['name']}\n{datetime.now().strftime('%d/%m/%Y')}\nSystem prompt: {SYSTEM_PROMPT}"
+    main_memory = load_memory(HISTORY_FILE, model_key)
     
-    # Auto-execution settings
     auto = True
-    auto_counter = 0
     auto_max = 5
     
     while True:
         user_input = input(f"{name}: ")
-        record += f"\n{datetime.now().strftime('%H:%M:%S')} {name}: {user_input}"
+        if user_input.startswith('/'):
+            add_to_memory(main_memory, "command", user_input, model_key)
+        else:
+            add_to_memory(main_memory, "user", user_input, model_key)
         
-        # Handle special commands
         if user_input.startswith('/'):
             if user_input == '/q':
                 break
             elif user_input in ['/qs', '/sq']:
-                os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-                with open(HISTORY_FILE, 'a') as f:
-                    f.write(record)
-                print(f"Saved to {HISTORY_FILE}")
+                print(save_memory(main_memory, HISTORY_FILE))
                 break
             elif user_input.startswith('/switch'):
                 if len(user_input.split()) > 1:
-                    choice = user_input.split()[1]  
-                else: 
+                    choice = user_input.split()[1]
+                else:
                     print("\nModels:\n", '\n'.join(f"{k}: {v['name']}" for k, v in MODELS.items()))
                     choice = input()
                 if choice in MODELS:
                     model_key = choice
+                    MODEL_KEY = model_key
                     model = MODELS[model_key]
+                    add_to_memory(main_memory, "model", f"Switched to model {model['name']}", model_key)
                     print(f"Switched to {model['name']}")
                 else:
                     print(f"Invalid model key: {choice}")
                 continue
             elif user_input.startswith('/auto'):
                 parts = user_input.split()
-                if len(parts) == 1:  # /auto
+                if len(parts) == 1:
                     print(f"Auto is {'on' if auto else 'off'}, max iterations: {auto_max}")
-                elif len(parts) == 2 and parts[1] in ['on', 'off']:  # /auto on or /auto off
+                elif len(parts) == 2 and parts[1] in ['on', 'off']:
                     auto = (parts[1] == 'on')
                     print(f"Auto set to {'on' if auto else 'off'}")
-                elif len(parts) == 3 and parts[1] == 'max':  # /auto max n
+                elif len(parts) == 3 and parts[1] == 'max':
                     try:
-                        new_max = int(parts[2])
-                        if new_max >= 0:
-                            auto_max = new_max
+                        auto_max = int(parts[2])
+                        if auto_max >= 0:
                             print(f"Auto max set to {auto_max}")
                         else:
                             print("Max must be a non-negative integer")
@@ -521,13 +574,13 @@ def chat_loop(name, model_key):
                         print("Invalid number for auto max")
                 else:
                     print("Usage: /auto [on|off|max n]")
-                    continue
+                continue
             elif user_input.startswith('/key'):
                 parts = user_input.split()
                 if len(parts) == 1:
                     status = "\n".join(f"{k}: {'Set' if API_KEY[k] else 'Not set'}" for k in API_KEY)
                     print(f"API Key Status:\n{status}")
-                elif len(parts) == 2:  # /key provider
+                elif len(parts) == 2:
                     provider = parts[1].lower()
                     if provider in API_KEY:
                         new_key = input(f"Enter new {provider} API key (or press Enter to clear): ")
@@ -537,54 +590,25 @@ def chat_loop(name, model_key):
                         print(f"Unknown provider. Available: {', '.join(API_KEY.keys())}")
                 else:
                     print("Usage: /key [provider]\nAvailable providers: " + ", ".join(API_KEY.keys()))
-                    continue
-        
-        # Process tool commands in user input
-        if TOOL_TAG in user_input:
-            user_input += "\n" + process_tool_command(user_input, WORKING_DIR, TOOL_MODEL)
-        messages.append({"role": "user", "content": user_input})
-        
-        try:
-            # Get model response
-            response = api_call(messages, model_key)
-            print(f"\n{model['name']}: {response}")
-            record += f"\n{datetime.now().strftime('%H:%M:%S')} {model['name']}: {response}"
-            messages.append({"role": "assistant", "content": response})
-            
-            # Tool response loop
-            while TOOL_TAG in response:
-                if not auto or auto_counter > auto_max:
-                    auto_counter = 0
-                    user_interrupt = input("Break message: ")
-                    if user_interrupt:
-                        print("SYSTEM: Tool execution stopped\n")
-                        messages.append({"role": "user", "content": f"SYSTEM: Tool execution stopped\n{name}: {user_interrupt}"})
-                        break
-                else:
-                    auto_counter += 1
-                
-                tool_response = "SYSTEM: " + process_tool_command(response, WORKING_DIR, TOOL_MODEL)
-                print(tool_response)
-                if (tool_response == "SYSTEM: Pass control back to user"): break
-                messages.append({"role": "user", "content": tool_response})
-                
-                # Get the next response after tool execution
-                response = api_call(messages, model_key)
-                print(f"\n{model['name']}: {response}")
-                record += f"\n{datetime.now().strftime('%H:%M:%S')} {model['name']}: {response}"
-                messages.append({"role": "assistant", "content": response})
+                continue
+        elif '@tool' in user_input:
+            tool_cmd = user_input if TOOL_TAG in user_input else user_input.split('@tool', 1)[1].strip()
+            tool_response = process_tool_command(main_memory, tool_cmd, WORKING_DIR, TOOL_MODEL)
+            if tool_response != "Pass control back to user":
+                api_call(main_memory, f"SYSTEM: {tool_response}", model_key)
+        else:
+            response = api_call(main_memory, user_input, model_key)
             auto_counter = 0
-        
-        except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            print(f"\n{error_msg}")
-            record += f"\n{datetime.now().strftime('%H:%M:%S')} {error_msg}"
-        
-    # Final save
-    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-    with open(HISTORY_FILE, 'a') as f:
-        f.write(record)
-    print(f"Saved to {HISTORY_FILE}")
+            while TOOL_TAG in response and auto and auto_counter < auto_max:
+                auto_counter += 1
+                tool_response = process_tool_command(main_memory, response, WORKING_DIR, TOOL_MODEL)
+                if tool_response == "Pass control back to user":
+                    break
+                response = api_call(main_memory, f"SYSTEM: {tool_response}", model_key)
+            if auto_counter >= auto_max:
+                print("Auto execution limit reached")
+    
+    print(save_memory(main_memory, HISTORY_FILE))
 
 if __name__ == "__main__":
     os.makedirs(os.path.join(WORKING_DIR, HISTORY_DIR), exist_ok=True)
