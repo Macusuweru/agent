@@ -43,9 +43,9 @@ MODELS = {
     '13': {'name': 'deepseek/deepseek-r1:free', 'provider': 'openrouter'},
     '14': {'name': 'deepseek/deepseek-chat:free', 'provider': 'openrouter'}
 }
-TOOL_MODEL = '5'
+TOOL_MODEL = '7'
 
-SYSTEM_PROMPT = f"""You are my friend and assistant. You can nest your private thoughts and feelings inside <think> tags. Think carefully about the user's intentions before acting. In this conversation, the helpful system assistant is watching. It will execute commands for you if you begin with the following tag: "{TOOL_TAG}". It can interpret natural language instructions. For example "{TOOL_TAG} please create a new directory for my linear algebra notes" will create an appropriately named directory. Make sure that you provide all the arguments the assistant needs. It can summarize, read, write, and list files, get the time, write dated and numbered logs, and add, remove events and return a day's events from the calendar. Writing a file will preemptively create the necessary folder hierarchy. It can also change the current directory. In order to preserve the context window, favor summarize over read. When you call a tool, be brief and wait for a response. It can only handle one tool command at a time. The current context uses rich formatting, so use rich to embellish your responses as you desire."""
+SYSTEM_PROMPT = f"""My friend and assistant! You can nest your private thoughts and feelings inside <think> tags. Think carefully about the user's intentions before acting. In this conversation, the helpful system assistant is watching. It will execute commands for you if you begin with the following tag: "{TOOL_TAG}". It can interpret natural language instructions. For example "{TOOL_TAG} please create a new directory for my linear algebra notes" will create an appropriately named directory. Make sure that you provide all the arguments the assistant needs. It can summarize, read, write, and list files, get the time, write dated and numbered logs, and add, remove events and return a day's events from the calendar. Writing a file will preemptively create the necessary folder hierarchy. It can also change the current directory. In order to preserve the context window, favor summarize over read. When you call a tool, be brief and wait for a response. It can only handle one tool command at a time. The current context uses rich formatting, so use rich to embellish your responses as you desire."""
 
 TOOL_SYSTEM_PROMPT = f"""You are a command parsing assistant. The following message is an excerpt from a conversation between a user and an assistant. You are called to attend to any message containing the tool tag: "{TOOL_TAG}". Your role is to call your commands in order to aid the user or assistant. If there is insufficient information to call the command, communicate that with the say command. You may need to creatively interpret some inputs. If the user appears to be attempting multiple things, carefully describe all commands they are attempting and the associated inputs then execute all of them simultaneously without waiting for feedback. If the assistant is not requesting any specific command and is using the tool tag as an example, pass control back to the user.
 
@@ -178,6 +178,10 @@ SUMMARIZE_TOOL_SYSTEM_PROMPT = """You are an expert summarizer. Your task is to 
 </FILE_CONTENT>
 
 Provide only the summary, without additional commentary or metadata."""
+
+END_SUMMARY_MESSAGE_PROMPT = """Please briefly summarize the points discussed in the previous conversation."""
+END_SUMMARY_SYSTEM_PROMPT = """The following is a dialogue between the user and assistant:"""
+
 API_URL = {
     'anthropic': "https://api.anthropic.com/v1/messages",
     'openai': "https://api.openai.com/v1/chat/completions",
@@ -469,7 +473,7 @@ def parse_command(cmd_str):
 
 def process_tool_command(main_memory, input_str, working_dir, model_key):
     tool_cmd = input_str if TOOL_TAG in input_str else input_str.split('@tool', 1)[1].strip() if '@tool' in input_str else input_str
-    cmd_output = api_call_minimal([{"role": "user", "content": tool_cmd}], model_key, 'deepseek', TOOL_SYSTEM_PROMPT)
+    cmd_output = api_call_minimal([{"role": "user", "content": tool_cmd}], model_key, MODELS[model_key]["provider"], TOOL_SYSTEM_PROMPT)
     add_to_memory(main_memory, "tool", cmd_output, model_key)
     command_list = parse_command(cmd_output)
     if not command_list:
@@ -545,12 +549,12 @@ def chat_loop(name, model_key, initial_memory = None):
                 console.print(f"[yellow]{entry['content']}[/yellow]")
             elif DEBUG and entry["type"] in ["system", "tool", "assistant"]:
                 console.print(f"[cyan]DEBUG ASSISTANT: {entry['content']}[/cyan]")
-            elif entry["type"] == "user":  # Add user case explicitly
+            elif entry["type"] == "user":
                 console.print(f"[bold green]{name}:[/bold green] {entry['content']}")
         console.print("[green]Continuing conversation with loaded history.[/green]")
     
     auto = True
-    auto_max = 5
+    auto_max = 3
     
     while True:
         user_input = session.prompt(f"{name}: ")
@@ -563,6 +567,7 @@ def chat_loop(name, model_key, initial_memory = None):
             if user_input == '/q':
                 break
             elif user_input in ['/qs', '/sq']:
+                api_call(main_memory, END_SUMMARY_MESSAGE_PROMPT, model_key)
                 console.print(save_memory(main_memory, HISTORY_FILE))
                 break
             elif user_input.startswith('/switch'):
@@ -642,8 +647,6 @@ def chat_loop(name, model_key, initial_memory = None):
                 response = api_call(main_memory, f"SYSTEM: {tool_response}", model_key)
             if auto_counter >= auto_max:
                 console.print("[yellow]Auto execution limit reached[/yellow]")
-    
-    console.print(save_memory(main_memory, HISTORY_FILE))
 
 if __name__ == "__main__":
     os.makedirs(os.path.join(WORKING_DIR, HISTORY_DIR), exist_ok=True)
@@ -651,9 +654,9 @@ if __name__ == "__main__":
 
     # List existing conversations
     conversations = []
-    for filename in os.listdir(HISTORY_DIR):
+    for filename in os.listdir(os.path.join(WORKING_DIR, HISTORY_DIR)):
         if filename.endswith('.txt'):
-            path = os.path.join(HISTORY_DIR, filename)
+            path = os.path.join(WORKING_DIR, HISTORY_DIR, filename)
             with open(path, 'r') as f:
                 memory = json.load(f)
                 last_model = next(
@@ -675,7 +678,7 @@ if __name__ == "__main__":
 
     if conversations:
         console.print("\nExisting conversations:")
-        conversations.sort(key=lambda x: x['date'], reverse=True)
+        conversations.sort(key=lambda x: x['date'])
         for i, conv in enumerate(conversations):
             console.print(f"\n[bold]{i + 1}[/bold]. {conv['date'].strftime('%Y-%m-%d %H:%M')}")
             console.print(f"Model: {conv['model']}")
@@ -694,12 +697,12 @@ if __name__ == "__main__":
                 model_key = session.prompt("Model #: ")
                 if model_key not in MODELS:
                     model_key = '0'
-                chat_loop(name, model_key)  # New conversation
+                chat_loop(name, model_key)
                 break
             try:
                 idx = int(choice) - 1
                 if 0 <= idx < len(conversations):
-                    path = os.path.join(HISTORY_DIR, conversations[idx]['filename'])
+                    path = os.path.join(WORKING_DIR, HISTORY_DIR, conversations[idx]['filename'])
                     with open(path, 'r') as f:
                         memory = json.load(f)
                     model_key = next(
@@ -710,7 +713,7 @@ if __name__ == "__main__":
                         ),
                         '0'
                     )
-                    chat_loop(name, model_key, initial_memory=memory)  # Continue with loaded memory
+                    chat_loop(name, model_key, initial_memory=memory)
                     break
                 else:
                     console.print("[red]Invalid choice[/red]")
